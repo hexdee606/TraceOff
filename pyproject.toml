@@ -1,0 +1,99 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "traceoff"
+version = "3.0.0"
+description = "Privacy and network-hardening toolkit for security-focused Linux systems."
+authors = [
+    { name = "Dipen", email = "opensource.hexdee606@gmail.com" },
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.9"
+
+keywords = [
+    "privacy",
+    "security",
+    "cybersecurity",
+    "network",
+    "anonymity",
+    "linux",
+    "kali",
+    "parrot",
+    "mac spoofing",
+    "exif",
+    "dns leak",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Utilities",
+]
+
+
+# Core runtime dependencies (what users always get)
+dependencies = [
+    "typer",
+    "requests",
+]
+
+
+[project.optional-dependencies]
+# GUI support
+gui = [
+    "PySide6",
+]
+
+# Recommended security / metadata helpers
+extra = [
+    "piexif",
+    "rich",
+]
+
+# Developer tools
+dev = [
+    "pytest",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/hexdee606/TraceOff"
+Documentation = "https://github.com/hexdee606/TraceOff/wiki"
+Source = "https://github.com/hexdee606/TraceOff"
+Issues = "https://github.com/hexdee606/TraceOff/issues"
+
+
+[project.scripts]
+traceoff = "traceoff.cli:app"
+
+
+# Formatting and lint configuration
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311"]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--maxfail=1"
+
+
+[tool.flake8]
+max-line-length = 100
+exclude = ["build", "dist", ".venv"]
