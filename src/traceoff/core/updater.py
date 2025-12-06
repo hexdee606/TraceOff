@@ -12,7 +12,7 @@ from ..core.logger import get_logger
 
 logger = get_logger(__name__)
 
-UPDATE_URL = "https://raw.githubusercontent.com/hexdee606/TraceOff/main/RELEASE.json"
+UPDATE_URL = "https://raw.githubusercontent.com/hexdee606/TraceOff/develop/RELEASE.json"
 
 
 def check_updates(current_version: str) -> str:
