@@ -1,8 +1,7 @@
 """
 Graphical user interface for TraceOff (PySide6).
 
-This GUI provides a simple tabbed interface over the main
-TraceOff features:
+This GUI provides a tabbed interface over the main TraceOff features:
 
 - Privacy checkup (text + JSON)
 - MAC spoofing (single change)
@@ -11,11 +10,10 @@ TraceOff features:
 - Wi-Fi & hostname exposure inspection
 - About & update check
 
-Note:
-    Long-running operations (like checkup) are executed
-    directly; for most environments they are quick enough.
-    If you notice the UI freezing, a future version can
-    move heavy actions to background threads.
+Error handling:
+    All actions are wrapped with structured exception handling and
+    show user-friendly error dialogs with contextual hints instead
+    of raw tracebacks.
 """
 
 from __future__ import annotations
@@ -69,11 +67,34 @@ logger = get_logger(__name__)
 class TraceOffMainWindow(QMainWindow):
     """
     Main Qt window for the TraceOff GUI.
+
+    All user-triggered actions are wrapped in `try/except` and
+    delegated to `_handle_exception` to ensure the user always
+    receives clear feedback on what went wrong and what to do next.
     """
 
     def __init__(self, config: Optional[TraceOffConfig] = None) -> None:
         super().__init__()
-        self.config = config or TraceOffConfig.load_or_default()
+
+        # Safe config loading with error reporting
+        if config is not None:
+            self.config = config
+        else:
+            try:
+                self.config = TraceOffConfig.load_or_default()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Failed to load TraceOff configuration in GUI: %s", exc)
+                # Fallback: attempt a bare config instance
+                self.config = TraceOffConfig()
+                # We can show a warning once the window exists
+                QMessageBox.warning(
+                    self,
+                    "Configuration Warning",
+                    "Failed to load the TraceOff configuration file.\n\n"
+                    "A temporary default configuration will be used for this session.\n"
+                    "Please check or remove your config file.",
+                )
+
         self.setWindowTitle(f"TraceOff GUI – v{__version__}")
         self.resize(1000, 700)
 
@@ -83,7 +104,7 @@ class TraceOffMainWindow(QMainWindow):
         root_layout = QVBoxLayout()
         central.setLayout(root_layout)
 
-        header = QLabel(f"<h2>TraceOff – Privacy & Network Hardening</h2>")
+        header = QLabel("<h2>TraceOff – Privacy & Network Hardening</h2>")
         header.setTextFormat(Qt.RichText)
         root_layout.addWidget(header)
 
@@ -97,11 +118,14 @@ class TraceOffMainWindow(QMainWindow):
         self._init_network_tab()
         self._init_system_tab()
 
+        # Simple status bar for quick feedback
+        self.statusBar().showMessage("Ready")
+
     # ==== Error handling helpers ==========================================
 
     def _show_error(self, title: str, message: str, details: Optional[str] = None) -> None:
         """
-        Show an error dialog with optional details.
+        Show an error dialog with optional technical details.
         """
         dlg = QMessageBox(self)
         dlg.setIcon(QMessageBox.Critical)
@@ -111,37 +135,100 @@ class TraceOffMainWindow(QMainWindow):
             dlg.setDetailedText(details)
         dlg.exec()
 
+    def _set_status(self, text: str) -> None:
+        """
+        Update the status bar with a short message.
+        """
+        self.statusBar().showMessage(text, 8000)  # message stays ~8 seconds
+
     def _handle_exception(self, exc: Exception, context: str) -> None:
         """
-        Map internal exceptions to user-friendly dialogs.
+        Map internal exceptions to user-friendly dialogs with hints.
+
+        Args:
+            exc:
+                The exception instance.
+            context:
+                Short description of where the error happened (for display).
         """
+        # Privilege errors – user needs sudo / root.
         if isinstance(exc, PrivilegeError):
-            self._show_error(
-                "Privilege Error",
-                f"This action requires elevated privileges.\n\nContext: {context}",
-                str(exc),
+            msg = (
+                "This action requires elevated privileges (root).\n\n"
+                f"Context: {context}\n\n"
+                "Hint:\n"
+                "  • Run the equivalent command from a terminal with 'sudo', or\n"
+                "  • Start a privileged session depending on your OS."
             )
-        elif isinstance(exc, CommandExecutionError):
-            self._show_error(
-                "Command Failed",
-                f"A required system command failed.\n\nContext: {context}",
-                f"{exc}\n\nstderr:\n{getattr(exc, 'stderr', '')}",
+            self._show_error("Privilege Error", msg, details=str(exc))
+            self._set_status("Privilege error: action requires elevated permissions.")
+            return
+
+        # Command execution errors – missing system tools, bad exit code.
+        if isinstance(exc, CommandExecutionError):
+            stderr = getattr(exc, "stderr", "") or ""
+            hint_lines = [
+                "Hint:",
+                "  • Ensure the required tool is installed and available in PATH.",
+                "  • Common tools: 'ufw', 'ip', 'nmcli', 'sysctl', etc.",
+                "  • Try the same command from a terminal to see behavior.",
+            ]
+
+            # Simple heuristic hints based on stderr content:
+            lower = stderr.lower()
+            if "command not found" in lower or "not recognized" in lower:
+                hint_lines.append("  • It looks like a command is missing on this system.")
+            if "permission denied" in lower:
+                hint_lines.append("  • It looks like this command needs root privileges.")
+
+            msg = (
+                    "A required system command failed.\n\n"
+                    f"Context: {context}\n\n"
+                    + "\n".join(hint_lines)
             )
-        elif isinstance(exc, ConfigError):
-            self._show_error(
-                "Configuration Error",
-                "There is a problem with your TraceOff configuration.",
-                str(exc),
+            self._show_error("Command Failed", msg, details=f"{exc}\n\nstderr:\n{stderr}")
+            self._set_status("A system command failed. See error dialog.")
+            return
+
+        # Config issues – likely bad JSON or unreadable config file.
+        if isinstance(exc, ConfigError):
+            cfg_path = getattr(self.config, "_config_path", lambda: "<unknown>")()
+            msg = (
+                "There is a problem with your TraceOff configuration.\n\n"
+                f"Context: {context}\n"
+                f"Config file: {cfg_path}\n\n"
+                "Hint:\n"
+                "  • Check that the JSON is valid.\n"
+                "  • If unsure, temporarily delete or rename the config file."
             )
-        elif isinstance(exc, TraceOffError):
-            self._show_error("TraceOff Error", str(exc))
-        else:
-            logger.exception("Unhandled exception in GUI: %s", exc)
-            self._show_error(
-                "Unexpected Error",
-                "An unexpected error occurred. See logs for details.",
-                repr(exc),
+            self._show_error("Configuration Error", msg, details=str(exc))
+            self._set_status("Configuration error. Please check your config file.")
+            return
+
+        # Generic TraceOffError – something we raised on purpose.
+        if isinstance(exc, TraceOffError):
+            msg = (
+                f"A TraceOff error occurred.\n\nContext: {context}\n\n"
+                "Hint:\n"
+                "  • Check the detailed information for more context.\n"
+                "  • If this persists, consider opening a bug report."
             )
+            self._show_error("TraceOff Error", msg, details=str(exc))
+            self._set_status("TraceOff error. See error dialog for details.")
+            return
+
+        # Anything else – unexpected
+        logger.exception("Unhandled exception in GUI (%s): %s", context, exc)
+        msg = (
+            "An unexpected error occurred inside the GUI.\n\n"
+            f"Context: {context}\n\n"
+            "Hint:\n"
+            "  • Try running the equivalent CLI command for more detail.\n"
+            "  • Run with TRACEOFF_LOG_LEVEL=DEBUG to collect logs.\n"
+            "  • If reproducible, consider filing an issue on GitHub."
+        )
+        self._show_error("Unexpected Error", msg, details=repr(exc))
+        self._set_status("Unexpected error. See error dialog and logs for details.")
 
     # ==== Privacy tab =====================================================
 
@@ -176,10 +263,12 @@ class TraceOffMainWindow(QMainWindow):
         """
         Run full privacy checkup and show human-readable output.
         """
+        self._set_status("Running privacy checkup (text)…")
         try:
             builder = PrivacyReportBuilder(config=self.config)
             text = builder.render_human_readable()
             self.privacy_output.setPlainText(text)
+            self._set_status("Privacy checkup complete.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Running privacy checkup (text)")
 
@@ -187,13 +276,14 @@ class TraceOffMainWindow(QMainWindow):
         """
         Run full privacy checkup and show JSON output.
         """
+        self._set_status("Running privacy checkup (JSON)…")
         try:
             builder = PrivacyReportBuilder(config=self.config)
             text = builder.render_json(indent=2)
-            # Pretty JSON in the editor
             parsed = json.loads(text)
             pretty = json.dumps(parsed, indent=2)
             self.privacy_output.setPlainText(pretty)
+            self._set_status("Privacy checkup (JSON) complete.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Running privacy checkup (JSON)")
 
@@ -201,10 +291,12 @@ class TraceOffMainWindow(QMainWindow):
         """
         Show quick IP + location summary.
         """
+        self._set_status("Fetching public IP and geolocation…")
         try:
             checker = IpLeakChecker(config=self.config)
             summary = checker.build_location_summary()
             self.privacy_output.setPlainText(summary)
+            self._set_status("Public IP check complete.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Fetching public IP & location")
 
@@ -218,8 +310,8 @@ class TraceOffMainWindow(QMainWindow):
         form = QFormLayout()
 
         self.mac_iface_input = QLineEdit()
-        if self.config.default_interface:
-            self.mac_iface_input.setText(self.config.default_interface)
+        if getattr(self.config, "default_interface", None):
+            self.mac_iface_input.setText(self.config.default_interface)  # type: ignore[attr-defined]
         form.addRow("Interface:", self.mac_iface_input)
 
         self.mac_vendor_like = QCheckBox("Use vendor-like MAC prefixes")
@@ -251,9 +343,14 @@ class TraceOffMainWindow(QMainWindow):
         """
         iface = self.mac_iface_input.text().strip()
         if not iface:
-            self._show_error("Input Error", "Please specify a network interface (e.g., wlan0).")
+            self._show_error(
+                "Input Error",
+                "Please specify a network interface (for example: 'wlan0').",
+            )
+            self._set_status("MAC spoof aborted: no interface specified.")
             return
 
+        self._set_status(f"Spoofing MAC on interface '{iface}'…")
         try:
             manager = MacManager(config=self.config)
             result = manager.change_mac_once(
@@ -267,6 +364,7 @@ class TraceOffMainWindow(QMainWindow):
                 f"New MAC:   {result.new_mac}\n"
                 f"Dry run:   {result.dry_run}"
             )
+            self._set_status("MAC spoof operation completed.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "MAC spoof once")
 
@@ -318,7 +416,7 @@ class TraceOffMainWindow(QMainWindow):
 
     def _exif_browse(self) -> None:
         """
-        Open a file/folder selection dialog for EXIF operations.
+        Open a directory selection dialog for EXIF operations.
         """
         path = QFileDialog.getExistingDirectory(self, "Select directory")
         if path:
@@ -328,11 +426,14 @@ class TraceOffMainWindow(QMainWindow):
         path = self.exif_path_input.text().strip()
         if not path:
             self._show_error("Input Error", "Please select a file or directory to scan.")
+            self._set_status("EXIF scan aborted: no path selected.")
             return
+        self._set_status(f"Scanning for EXIF metadata in: {path}")
         try:
             cleaner = ExifCleaner(config=self.config)
             summary = cleaner.scan(path=path, recursive=self.exif_recursive.isChecked())
             self.exif_output.setPlainText(summary)
+            self._set_status("EXIF scan completed.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "EXIF scan")
 
@@ -340,7 +441,9 @@ class TraceOffMainWindow(QMainWindow):
         path = self.exif_path_input.text().strip()
         if not path:
             self._show_error("Input Error", "Please select a file or directory to clean.")
+            self._set_status("EXIF clean aborted: no path selected.")
             return
+        self._set_status(f"Cleaning EXIF metadata in: {path}")
         try:
             cleaner = ExifCleaner(config=self.config)
             summary = cleaner.clean(
@@ -349,6 +452,7 @@ class TraceOffMainWindow(QMainWindow):
                 backup=self.exif_backup.isChecked(),
             )
             self.exif_output.setPlainText(summary)
+            self._set_status("EXIF clean operation completed.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "EXIF clean")
 
@@ -414,32 +518,39 @@ class TraceOffMainWindow(QMainWindow):
         self.tabs.addTab(tab, "Network & Firewall")
 
     def _fw_show_status(self) -> None:
+        self._set_status("Querying firewall status (UFW)…")
         try:
             manager = FirewallManager(config=self.config)
             status = manager.get_status()
             self.network_output.setPlainText(status)
+            self._set_status("Firewall status retrieved.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Firewall status")
 
     def _fw_apply_profile(self, profile: str) -> None:
         dry_run = self.fw_dry_run.isChecked()
+        self._set_status(f"Applying firewall profile '{profile}' (dry_run={dry_run})…")
         try:
             manager = FirewallManager(config=self.config)
             manager.apply_profile(profile_name=profile, dry_run=dry_run)
             text = f"Requested firewall profile '{profile}' apply (dry_run={dry_run})."
             self.network_output.append(text)
+            self._set_status(f"Firewall profile '{profile}' apply requested.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, f"Apply firewall profile '{profile}'")
 
     def _dns_check(self) -> None:
+        self._set_status("Running DNS leak check…")
         try:
             checker = DnsLeakChecker(config=self.config)
             summary = checker.build_human_summary()
             self.network_output.setPlainText(summary)
+            self._set_status("DNS check completed.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "DNS leak check")
 
     def _ipv6_status(self) -> None:
+        self._set_status("Checking IPv6 status…")
         try:
             mgr = Ipv6Manager(config=self.config)
             result = mgr.build_status_check()
@@ -448,25 +559,35 @@ class TraceOffMainWindow(QMainWindow):
                 f"{result.summary}\n\n"
                 f"Details: {result.details}"
             )
+            self._set_status("IPv6 status retrieved.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "IPv6 status")
 
     def _ipv6_toggle(self, disable: bool) -> None:
         """
         IPv6 enable/disable via sysctl in 'dry-run' mode from the GUI
-        to avoid surprising the user. For real changes, prefer CLI.
+        to avoid surprising the user. For real changes, prefer the CLI.
         """
+        action = "disable" if disable else "enable"
+        self._set_status(f"Requesting IPv6 {action} (dry-run only)…")
         try:
             mgr = Ipv6Manager(config=self.config)
             if disable:
                 mgr.disable_ipv6(dry_run=True)
-                msg = "Requested IPv6 disable (dry-run only). Use CLI for real changes."
+                msg = (
+                    "Requested IPv6 disable (dry-run only).\n"
+                    "For real changes, use the CLI with appropriate privileges."
+                )
             else:
                 mgr.enable_ipv6(dry_run=True)
-                msg = "Requested IPv6 enable (dry-run only). Use CLI for real changes."
+                msg = (
+                    "Requested IPv6 enable (dry-run only).\n"
+                    "For real changes, use the CLI with appropriate privileges."
+                )
             self.network_output.append(msg)
+            self._set_status(f"IPv6 {action} dry-run completed.")
         except Exception as exc:  # noqa: BLE001
-            self._handle_exception(exc, "IPv6 toggle (dry-run)")
+            self._handle_exception(exc, f"IPv6 {action} (dry-run)")
 
     # ==== System / Wi-Fi / Hostname / Updates tab =========================
 
@@ -504,29 +625,33 @@ class TraceOffMainWindow(QMainWindow):
         self.tabs.addTab(tab, "System & Info")
 
     def _wifi_summary(self) -> None:
+        self._set_status("Building Wi-Fi privacy summary…")
         try:
             mgr = WifiPrivacyManager(config=self.config)
             summary = mgr.build_human_summary()
             self.system_output.setPlainText(summary)
+            self._set_status("Wi-Fi privacy summary updated.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Wi-Fi privacy summary")
 
     def _hostname_summary(self) -> None:
+        self._set_status("Checking hostname and mDNS exposure…")
         try:
             mgr = HostnameManager(config=self.config)
             summary = mgr.build_human_summary()
             self.system_output.setPlainText(summary)
+            self._set_status("Hostname exposure summary updated.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Hostname exposure summary")
 
     def _about_dialog(self) -> None:
-        cfg_path = self.config._config_path()  # type: ignore[attr-defined]
+        cfg_path = getattr(self.config, "_config_path", lambda: "<unknown>")()
         text = (
             f"<b>TraceOff</b> – Privacy & Network Hardening Toolkit<br>"
             f"Version: {__version__}<br>"
             f"Config file: {cfg_path}<br><br>"
             "Use this GUI for quick inspection and safe actions.<br>"
-            "For advanced operations and auto-fix, prefer the CLI."
+            "For advanced operations and auto-fix workflows, prefer the CLI."
         )
         dlg = QMessageBox(self)
         dlg.setWindowTitle("About TraceOff")
@@ -535,9 +660,11 @@ class TraceOffMainWindow(QMainWindow):
         dlg.exec()
 
     def _update_check(self) -> None:
+        self._set_status("Checking for TraceOff updates…")
         try:
             msg = check_updates(__version__)
             self.system_output.append(msg)
+            self._set_status("Update check complete.")
         except Exception as exc:  # noqa: BLE001
             self._handle_exception(exc, "Update check")
 
@@ -548,9 +675,25 @@ class TraceOffMainWindow(QMainWindow):
 def gui_entry() -> None:
     """
     Entry point used by `traceoff gui` CLI command.
+
+    A failure here should print a clear message to stderr,
+    but usually any runtime errors are handled by the window.
     """
     app = QApplication(sys.argv)
-    config = TraceOffConfig.load_or_default()
-    window = TraceOffMainWindow(config=config)
+    try:
+        config = TraceOffConfig.load_or_default()
+        window = TraceOffMainWindow(config=config)
+    except Exception as exc:  # noqa: BLE001
+        # Last-resort error handler if even window creation fails.
+        logger.exception("Failed to start TraceOff GUI: %s", exc)
+        QMessageBox.critical(
+            None,
+            "Startup Error",
+            "TraceOff GUI failed to start.\n\n"
+            "Check your Python environment and configuration.\n"
+            "See log output for more details.",
+        )
+        sys.exit(1)
+
     window.show()
     sys.exit(app.exec())

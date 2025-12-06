@@ -1,0 +1,24 @@
+{
+  "latest": "3.0.0",
+  "min_supported": "3.0.0",
+  "releases": [
+    {
+      "version": "3.0.0",
+      "date": "2025-12-06",
+      "channel": "stable",
+      "highlights": [
+        "New PySide6 GUI with multi-tab privacy toolkit.",
+        "Registry-based privacy checks with JSON output.",
+        "Interactive auto-fix preview via CLI.",
+        "Plugin loader for custom checks and extensions.",
+        "Improved error handling in CLI and GUI.",
+        "Configurable behavior via JSON config file."
+      ],
+      "breaking_changes": [
+        "Project structure reorganized under core/modules/checks/gui.",
+        "Legacy AMC 2.x structure replaced with TraceOff 3.x design."
+      ],
+      "notes_url": "https://github.com/hexdee606/TraceOff/releases"
+    }
+  ]
+}
